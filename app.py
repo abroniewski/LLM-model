@@ -4,13 +4,15 @@ import datetime
 import sys
 
 # --- Configuration ---
+# These constants control the behavior and limits of the app and model.
 OLLAMA_API_URL = "http://localhost:11434/v1/chat/completions"  # Ollama's OpenAI-compatible endpoint
 DEFAULT_MODEL = "phi"  # Default model name
 MODEL_CONTEXT_LIMIT = 2048  # Max tokens for model context
 SUMMARIZE_THRESHOLD = 1500  # When to trigger summarization
-MAX_RESPONSE_TOKENS = 1024  # Lowered for faster responses
+MAX_RESPONSE_TOKENS = 1024  # Limit the length of model responses (adjust for your needs)
 
 # --- System Prompts ---
+# These are special instructions sent to the model to guide its behavior.
 SYSTEM_PROMPT_GENERAL = (
     "You are a concise, helpful assistant. "
     "Only answer the user's latest question. "
@@ -23,14 +25,16 @@ SYSTEM_PROMPT_PHI = (
 )
 
 # --- Model Types ---
-SINGLE_TURN_MODELS = {"phi"}  # Models that only support single-turn Q&A
+# Some models (like phi) are single-turn only and don't support chat history.
+SINGLE_TURN_MODELS = {"phi"}
 
 # --- Streamlit UI Setup ---
+# Set up the Streamlit page and title.
 st.set_page_config(page_title="Local Ollama Chat", layout="centered")
 st.title("Local LLM Chat")
 
 # --- Session State Initialization ---
-# Store chat history, summary, and logs in session state for persistence across reruns
+# Use Streamlit's session state to persist chat history, summaries, and logs across reruns.
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []  # Each item: {role: 'user'|'assistant'|'system', content: str}
 if 'summary' not in st.session_state:
@@ -40,7 +44,7 @@ if 'logs' not in st.session_state:
 
 # --- Logging Function ---
 def log(msg, level="INFO"):
-    """Log messages to both the sidebar and the terminal, with color coding."""
+    """Log messages to both the sidebar and the terminal, with color coding for clarity."""
     st.session_state.logs.append(f"[{level}] {msg}")
     now = datetime.datetime.now().strftime('%H:%M:%S')
     color = {
@@ -53,8 +57,9 @@ def log(msg, level="INFO"):
     print(f"{color}[{now}] [{level}] {msg}{reset}", file=sys.stderr if level=="ERROR" else sys.stdout)
 
 # --- Sidebar: Model Selection and Debug Log ---
+# The sidebar lets users pick a model and view recent logs.
 with st.sidebar:
-    # List of available models (edit this list to add more)
+    # List of available models, ordered from fastest/simplest to slowest/most capable.
     available_models = [
         "phi:latest",                # Smallest, fastest
         "codellama:instruct",        # Small, general-purpose
@@ -63,6 +68,7 @@ with st.sidebar:
         "codellama:13b-instruct",    # Mid-range, balanced
         "codellama:34b-instruct"     # Largest, slowest, highest quality
     ]
+    # Default to a chat-tuned model if available.
     default_model = "codellama:7b-instruct" if "codellama:7b-instruct" in available_models else available_models[0]
     model = st.selectbox("Model name", available_models, index=available_models.index(default_model))
     st.markdown("""
@@ -71,16 +77,17 @@ with st.sidebar:
     - This app uses the OpenAI-compatible /v1/chat/completions endpoint.
     - For best chat results, use a chat/instruct model like 'codellama:7b-instruct' or 'deepseek-coder:6.7b'.
     """)
-    # Show model-specific notes
+    # Show model-specific notes for single-turn models.
     if model.startswith("phi"):
         st.info("\n**Note:** The selected model ('phi') is best for single-turn Q&A, short completions, and direct prompts. It does not have memory or handle multi-turn conversation well. For chat, use a model like 'codellama:7b-instruct' or 'deepseek-coder:6.7b'.\n")
     st.markdown("---")
     st.markdown("#### Debug Log")
-    # Show the last 20 log entries
+    # Show the last 20 log entries for transparency.
     for entry in st.session_state.logs[-20:]:
         st.text(entry)
 
 # --- Main Chat History Display ---
+# Render the chat history in a scrollable container, with code highlighting and markdown support.
 with st.container():
     st.markdown("#### Chat History")
     st.markdown(
@@ -89,7 +96,6 @@ with st.container():
         """,
         unsafe_allow_html=True
     )
-    # Render each message in the chat history
     for idx, msg in enumerate(st.session_state.chat_history):
         if msg['role'] not in ('user', 'assistant'):
             continue
@@ -123,11 +129,13 @@ with st.container():
     st.markdown("</div>", unsafe_allow_html=True)
 
 # --- Chat Input Form ---
+# The form for user input, with a text area and submit button.
 with st.form("chat_form", clear_on_submit=True):
     prompt = st.text_area("Enter your prompt:", height=150, key="prompt_input")
     submitted = st.form_submit_button("Send")
 
 # --- Keyboard Shortcut for Submission ---
+# Add JavaScript to allow Cmd+Enter or Ctrl+Enter to submit the form for convenience.
 st.markdown(
     """
     <script>
@@ -147,6 +155,7 @@ st.markdown(
 )
 
 # --- Prevent Double Submission on Rerun ---
+# This flag ensures that a prompt is only handled once per submission.
 if 'handled_submit' not in st.session_state:
     st.session_state.handled_submit = False
 
@@ -168,6 +177,7 @@ def build_multi_turn_messages(user_prompt):
     messages = [{"role": "system", "content": SYSTEM_PROMPT_GENERAL}]
     if st.session_state.summary:
         messages.append({"role": "system", "content": f"[Summary so far]: {st.session_state.summary}"})
+    # Only keep the last 4 messages to stay within context window.
     history = st.session_state.chat_history[-4:]
     if history:
         messages.extend(history)
@@ -176,7 +186,7 @@ def build_multi_turn_messages(user_prompt):
     return messages
 
 def build_messages(user_prompt, model_name):
-    """Dispatch to the correct message builder based on model."""
+    """Dispatch to the correct message builder based on model type."""
     if model_name.strip().lower() in SINGLE_TURN_MODELS:
         return build_single_turn_messages(user_prompt)
     else:
@@ -202,6 +212,7 @@ def maybe_summarize(model_name):
         log(f"[SUMMARIZE] Payload: {payload}")
         print(f"[SUMMARIZE] Sending payload: {payload}")
         try:
+            # Increase timeout for summarization, as it may take longer.
             response = requests.post(OLLAMA_API_URL, json=payload, timeout=240)
             print(f"[SUMMARIZE] Raw response: {response.text}")
             log(f"[SUMMARIZE] Raw response: {response.text}")
@@ -224,6 +235,7 @@ def maybe_summarize(model_name):
             st.warning(f"Failed to summarize conversation: {e}")
 
 # --- Main Chat Submission Logic ---
+# This block handles user prompt submission, builds the payload, and processes the model's response.
 if submitted and prompt.strip() and not st.session_state.handled_submit:
     st.session_state.handled_submit = True
     # Add user message to history
@@ -238,7 +250,7 @@ if submitted and prompt.strip() and not st.session_state.handled_submit:
     payload = {
         "model": model,
         "messages": messages,
-        "stream": False,  # Disable streaming
+        "stream": False,  # Disable streaming for now (can be enabled for faster perceived responses)
         "max_tokens": MAX_RESPONSE_TOKENS
     }
     log(f"[SEND] Payload: {payload}")
@@ -271,5 +283,6 @@ if submitted and prompt.strip() and not st.session_state.handled_submit:
             print(f"[SEND] Error: {e}")
 
 # --- Reset handled_submit flag after rerun ---
+# This ensures the form can be submitted again after a rerun.
 if not submitted:
     st.session_state.handled_submit = False 
